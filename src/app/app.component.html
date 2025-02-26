@@ -1,7 +1,7 @@
 <nav class="navbar navbar-expand-md bg-body-tertiary d-flex justify-content-between fw-semibold">
   <div class="d-inline-flex align-items-center">
     <a class="navbar-brand fs-2" href="#">
-      <img src="../favicon.ico" alt="icon" width="70" height="70" class="d-inline-block align-text-center" data-bs-toggle="offcanvas" href="#offcanvasExample" role="button" aria-controls="offcanvasExample">
+      <img src="../favicon.ico" alt="icon" width="70" height="70" class="d-inline-block align-text-center" data-bs-toggle="offcanvas" href="#offcanvasExample" role="button" aria-controls="offcanvasExample" (click)="$event.preventDefault();">
       Melodías a Ciegas
     </a>
   </div>
@@ -14,12 +14,14 @@
       <li class="nav-item">
         <a class="nav-link active" aria-current="page" href="#">Piano</a>
       </li>
-      <li class="nav-item">
+
+      <!-- <li class="nav-item">
         <a class="nav-link disable" aria-disabled="true" aria-current="page" href="#">Guitarra</a>
       </li>
       <li class="nav-item">
         <a class="nav-link disable" aria-disabled="true" aria-current="page" href="#">Otros</a>
-      </li>
+      </li> -->
+      
     </ul>
     <ul class="navbar-nav fs-2">
       <li class="nav-item dropdown">
@@ -30,11 +32,12 @@
         <ul class="dropdown-menu dropdown-menu-end">
           <li><a class="dropdown-item" href="#">Configuración</a></li>
           <li><hr class="dropdown-divider"></li>
-          <li><a class="dropdown-item" href="#">Cerrar Sesión</a></li>
+          <li><a class="dropdown-item" (click)="logout()">Cerrar Sesión</a></li>
         </ul>
       </li>
     </ul>
   </div>
 </nav>
 
-<app-piano></app-piano>
+
+<router-outlet></router-outlet>

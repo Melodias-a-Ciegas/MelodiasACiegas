@@ -1,0 +1,93 @@
+<!-- Código HTML del Componente Subir Canción -->
+<div class="container-fluid py-4" style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f2f5;">
+    <div class="card mx-auto" style="max-width: 600px; border: none; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
+      <div class="card-body">
+        <h2 class="mb-4 text-center" style="font-weight: 600; color: #333;">Subir Canción</h2>
+        <form [formGroup]="songForm" (ngSubmit)="onSubmit()">
+          
+          <div class="mb-3">
+            <label for="nombre" class="form-label" style="font-weight: 500; color: #555;">Nombre de la Canción</label>
+            <input type="text" id="nombre" formControlName="nombre" class="form-control" placeholder="Escribe el nombre de la canción">
+            <div *ngIf="songForm.get('nombre')?.invalid && songForm.get('nombre')?.touched" class="text-danger mt-1" style="font-size: 0.9rem;">
+                El nombre es obligatorio.
+            </div>
+          </div>
+    
+          <div class="mb-3">
+            <label for="imagen" class="form-label" style="font-weight: 500; color: #555;">Imagen (se convertirá a Base64)</label>
+            <input type="file" id="imagen" (change)="onImageChange($event)" accept="image/*" class="form-control">
+          </div>
+    
+          <div class="mb-3">
+            <label for="archivo" class="form-label" style="font-weight: 500; color: #555;">Archivo MXL (Music XML comprimido en formato zip)</label>
+            <input type="file" id="archivo" (change)="onXMLChange($event)" accept=".mxl, .xml, .musicxml" class="form-control">
+            <div *ngIf="songForm.get('archivo')?.invalid && songForm.get('archivo')?.touched" class="text-danger mt-1" style="font-size: 0.9rem;">
+                El archivo XML es obligatorio.
+            </div>
+          </div>
+    
+          <div class="d-flex justify-content-center">
+            <button type="submit" class="btn btn-primary me-3" [disabled]="songForm.invalid" style="padding: 0.6rem 2rem; border-radius: 30px; font-weight: 600; transition: transform 0.2s;">
+              Subir Canción
+            </button>
+    
+            <button type="button" class="btn btn-secondary" (click)="navigateToHome()" style="padding: 0.6rem 2rem; border-radius: 30px; font-weight: 600; transition: transform 0.2s;">
+              Volver a Inicio
+            </button>
+          </div>
+    
+        </form>
+      </div>
+    </div>
+    <router-outlet></router-outlet>
+  </div>
+  
+  <!-- Estilos Específicos -->
+  <style>
+    body {
+      background-color: #f0f2f5;
+    }
+    
+    .card {
+      background-color: #fff;
+      margin-top: 2rem;
+    }
+    
+    .form-control {
+      border-radius: 5px;
+      border: 1px solid #ced4da;
+    }
+    
+    .btn-primary {
+      background-color: #0d6efd;
+      border-color: #0d6efd;
+      transition: background-color 0.3s, transform 0.2s;
+    }
+    
+    .btn-primary:hover {
+      background-color: #0b5ed7;
+      transform: translateY(-2px);
+    }
+    
+    .btn-secondary {
+      background-color: #6c757d;
+      border-color: #6c757d;
+      transition: background-color 0.3s, transform 0.2s;
+    }
+    
+    .btn-secondary:hover {
+      background-color: #5c636a;
+      transform: translateY(-2px);
+    }
+    
+    label {
+      margin-bottom: 0.5rem;
+    }
+    
+    @media (max-width: 576px) {
+      .btn {
+        padding: 0.5rem 1.5rem;
+        font-size: 0.9rem;
+      }
+    }
+  </style>

@@ -1,0 +1,192 @@
+<!-- Código HTML Actualizado -->
+<div class="container-fluid py-4" style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f2f5;">
+
+  <!-- Selector de modo -->
+  <div class="mode-selector text-center mb-5">
+    <h2 class="mb-4" style="font-weight: 600; color: #333;">Selecciona el modo</h2>
+    <div class="btn-group" role="group">
+      <button 
+        type="button" 
+        class="btn btn-toggle" 
+        [ngClass]="{'btn-primary': selectedMode === 'songs', 'btn-outline-primary': selectedMode !== 'songs'}"
+        (click)="selectedMode = 'songs'">
+        Canciones
+      </button>
+      <button 
+        type="button" 
+        class="btn btn-toggle" 
+        [ngClass]="{'btn-primary': selectedMode === 'practice', 'btn-outline-primary': selectedMode !== 'practice'}"
+        (click)="selectedMode = 'practice'">
+        Práctica Libre
+      </button>
+      
+      <!-- Botón para subir canciones -->
+      <!-- <button 
+        type="button" 
+        class="btn btn-success mx-2 btn-upload" 
+        (click)="navigateToUploadSong()">
+        Subir Canción
+      </button> -->
+    </div>
+  </div>
+
+  <!-- Sección de recomendaciones personalizada (sólo se muestra si no está en modo práctica) -->
+  <div *ngIf="recommendations.length > 0 && selectedMode !== 'practice'" class="recommendations-section mx-auto mb-5" style="max-width: 800px; background-color: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 1rem;">
+    <h4 class="text-center mb-3" style="font-weight: 500; color: #555;">Te Recomendamos estas canciones</h4>
+    <div class="list-group">
+      <a *ngFor="let rec of recommendations" 
+         class="list-group-item list-group-item-action recommendation-item"
+         (click)="navigateToSong(rec.idCancionId)">
+         <div class="d-flex align-items-center">
+           <!-- Imagen de la recomendación -->
+           <img *ngIf="rec.imagen" 
+                [src]="'data:image/jpeg;base64,' + rec.imagen" 
+                alt="Imagen de la canción" 
+                class="img-thumbnail me-3 rec-img">
+           <div>
+             <h5 class="mb-1" style="font-size: 1.1rem;">{{ rec.nombre }}</h5>
+             <small class="text-muted">
+               Similitud: {{ rec.score_final ? (rec.score_final | number:'1.2-2') : (rec.puntaje_default | number:'1.2-2') }}
+             </small>
+             <p class="mb-1" style="font-size: 0.9rem;">Compositor: {{ rec.compositor }}</p>
+           </div>
+         </div>
+      </a>
+    </div>
+  </div>
+
+  <!-- Modo Canciones -->
+  <div class="mx-auto" *ngIf="selectedMode === 'songs'" style="max-width: 1200px;">
+    <h3 class="text-center mb-4" style="font-weight: 600; color: #333;">Elige una canción</h3>
+    <div class="row row-cols-2 row-cols-md-3 row-cols-lg-5 g-4">
+      <div class="col" *ngFor="let song of songs2">
+        <div class="card h-100 song-card" (click)="navigateToSong(song.id)" style="cursor: pointer;">
+          <img [src]="'data:image/jpeg;base64,' + song.imagen" class="card-img-top" alt="Imagen de la canción">
+          <div class="card-body">
+            <h5 class="card-title" style="font-size: 1rem; font-weight: 500; color: #333;">{{ song.nombre }}</h5>
+            <p class="card-text mb-0" style="font-size: 0.9rem; color: #666;">Compositor: {{ song.compositor }}</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modo Práctica Libre -->
+  <div *ngIf="selectedMode === 'practice'" class="text-center">
+    <div class="practice-mode-container mx-auto">
+      <h3 class="mb-3" style="color: #333; font-weight: 600;">Modo Práctica Libre</h3>
+      <p class="mb-4" style="color: #555;">Practica libremente sin seguir una canción específica.</p>
+      <button class="btn btn-lg btn-primary btn-practice" (click)="navigateToPractice()">
+        Comenzar Práctica Libre
+      </button>
+    </div>
+  </div>
+
+</div>
+
+<!-- Estilos específicos -->
+<style>
+  /* General */
+  body {
+    background-color: #f0f2f5;
+  }
+
+  h2, h3, h4 {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  }
+
+  /* Botón del selector de modos */
+  .btn-toggle {
+    padding: 0.6rem 2rem;
+    border-radius: 30px;
+    font-weight: 600;
+    transition: background-color 0.3s, transform 0.2s, box-shadow 0.3s;
+  }
+  .btn-toggle:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+  }
+  
+  .btn-upload {
+    padding: 0.6rem 2rem;
+    border-radius: 30px;
+    font-weight: 600;
+    transition: background-color 0.3s, transform 0.2s;
+  }
+  .btn-upload:hover {
+    transform: translateY(-3px);
+  }
+  
+  .btn-practice {
+    padding: 0.75rem 3rem;
+    border-radius: 30px;
+    font-weight: 600;
+    transition: background-color 0.3s, transform 0.2s;
+  }
+  .btn-practice:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+  }
+  
+  /* Recomendaciones */
+  .recommendation-item {
+    transition: background-color 0.3s, transform 0.2s;
+    border: none;
+    border-bottom: 1px solid #e9ecef;
+    padding: 0.75rem 1rem;
+    border-radius: 5px;
+    margin-bottom: 0.5rem;
+  }
+  .recommendation-item:hover {
+    background-color: #e8edf3;
+    transform: scale(1.01);
+    cursor: pointer;
+  }
+  
+  .rec-img {
+    width: 60px; 
+    height: 60px; 
+    object-fit: cover;
+    border-radius: 50%;
+    border: 2px solid #ddd;
+  }
+  
+  /* Tarjetas de las canciones */
+  .song-card {
+    border: none;
+    border-radius: 10px;
+    overflow: hidden;
+    transition: box-shadow 0.3s ease, transform 0.3s ease;
+    background-color: #fff;
+  }
+  .song-card:hover {
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    transform: translateY(-5px);
+  }
+  .card-img-top {
+    width: 100%;
+    aspect-ratio: 1/1;
+    object-fit: cover;
+  }
+  
+  /* Contenedor para Práctica Libre */
+  .practice-mode-container {
+    padding: 2rem;
+    background-color: #fff;
+    border-radius: 10px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    margin: 2rem auto;
+    max-width: 600px;
+  }
+  
+  /* Responsividad extra */
+  @media (max-width: 576px) {
+    .btn-group .btn {
+      padding: 0.5rem 1rem;
+      font-size: 0.9rem;
+    }
+    .practice-mode-container {
+      padding: 1.5rem;
+    }
+  }
+</style>

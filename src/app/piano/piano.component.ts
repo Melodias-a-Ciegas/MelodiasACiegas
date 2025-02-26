@@ -1,16 +1,19 @@
-import { Component, OnInit, ViewChildren, QueryList, ElementRef, Renderer2, AfterViewInit, ViewChild } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Component, OnInit, ViewChildren, QueryList, ElementRef, Renderer2, AfterViewInit, ViewChild, OnDestroy } from '@angular/core';
+import { ActivatedRoute, Router } from '@angular/router';
 import { OpenSheetMusicDisplay } from 'opensheetmusicdisplay';
 import * as Tone from 'tone';
+import * as JSZip from 'jszip'; // Asegúrate de tener JSZip instalado
+import { ApiService, CancionCalificacion } from '../services/api.service';
 
 @Component({
   selector: 'app-piano',
   templateUrl: './piano.component.html',
   styleUrls: ['./piano.component.css']
 })
-export class PianoComponent implements OnInit, AfterViewInit {
+export class PianoComponent implements OnInit, AfterViewInit, OnDestroy {
   @ViewChildren('pianoKey') pianoKeys!: QueryList<ElementRef>;
   @ViewChildren('octaveButton') octaveButtons!: QueryList<ElementRef>;
-  @ViewChildren('score') scores!: QueryList<ElementRef>;
   @ViewChild('pianoContainer') pianoContainer!: ElementRef;
   @ViewChild('sheet') sheet!: ElementRef;
   @ViewChild('selectScore') selectScore!: ElementRef;
@@ -32,46 +35,225 @@ export class PianoComponent implements OnInit, AfterViewInit {
   speechRecognition: SpeechRecognition | null = null;
   isRecording: boolean = true;
 
-  constructor(private renderer: Renderer2) { }
+  // Para evitar activaciones repetidas de teclas
+  pressedKeys: Set<string> = new Set();
+
+  // Para el manejo de acordes
+  expectedChordNotes: string[] = [];
+  playedChordNotes: Set<string> = new Set();
+  notesArray: string[] = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+  // Las canciones se cargarán desde la BD:
+  songs: any[] = [];
+
+  // Se usa el id pasado por URL para guardar la relación de calificación y analítica.
+  songId: number | null = null;
+  song: any;
+  score: any;
+
+  mxlFile: ArrayBuffer | null = null;
+  mxlFileBase64: string | null = null;
+
+  // VARIABLES PARA LA CALIFICACIÓN DE LA DIFICULTAD
+  difficultyRating: number = 0;
+  isRatingMode: boolean = false;
+  ratingAttempts: number = 0;
+
+  // VARIABLES PARA LA ANALÍTICA DE INTENTOS
+  attemptStart: Date = new Date();
+  correctNotes: number = 0;       // Notas correctas tocadas
+  incorrectNotes: number = 0;     // Notas incorrectas tocadas
+  chordsCompleted: number = 0;    // Cantidad de acordes completados
+  totalChords: number = 0;        // Número total de acordes (según la partitura)
+  attemptStored: boolean = false; // Bandera para saber si ya se almacenó (o imprimió) la analítica
+
+  constructor(private renderer: Renderer2,
+              private route: ActivatedRoute,
+              private router: Router,
+              private http: HttpClient,
+              private apiService: ApiService
+            ) { }
 
   ngOnInit(): void {
+    // Si la URL trae un id se descarga y enseña la canción.
+    this.route.paramMap.subscribe(params => {
+      const idParam = params.get('id');
+      if (idParam) {
+        this.downloadAndTeachSong(+idParam);
+      }
+    });
+    // Cargar la lista de canciones para mostrarlas en el modal o librería.
+    this.loadSongs();
     this.initMIDIAccess();
+
+    // Configuración para evitar activaciones repetidas mediante teclado.
     this.renderer.listen('window', 'keydown', (e: KeyboardEvent) => {
       if ("asdfghjklñwetyuopzxcvbnm,".includes(e.key)) {
         const keyElement = this.pianoKeys.find(k => k.nativeElement.dataset.key === e.key)?.nativeElement;
-        const octave = this.octave + Number(keyElement.dataset.octave);
-        this.playTuneForKeyboard(keyElement.dataset.note, octave.toString());
+        if (keyElement) {
+          const note = keyElement.dataset.note;
+          const octave = this.octave + Number(keyElement.dataset.octave);
+          const noteId = note + octave;
+          if (!this.pressedKeys.has(noteId)) {
+            this.pressedKeys.add(noteId);
+            this.playNoteOnKeyboard(note, octave.toString());
+          }
+        }
+      }
+    });
+    
+    this.renderer.listen('window', 'keyup', (e: KeyboardEvent) => {
+      if ("asdfghjklñwetyuopzxcvbnm,".includes(e.key)) {
+        const keyElement = this.pianoKeys.find(k => k.nativeElement.dataset.key === e.key)?.nativeElement;
+        if (keyElement) {
+          const note = keyElement.dataset.note;
+          const octave = this.octave + Number(keyElement.dataset.octave);
+          const noteId = note + octave;
+          if (this.pressedKeys.has(noteId)) {
+            this.pressedKeys.delete(noteId);
+            this.releaseNoteOnKeyboard(note, octave.toString());
+          }
+        }
       }
     });
   }
 
+  navigateToHome(): void {
+    this.router.navigate(['home']);
+  }
+
+  // Antes de cargar una nueva canción, se guarda la analítica del intento actual si se ha tocado más de 20 notas.
+  loadSong(songId: number): void {
+    if (this.isScore && !this.attemptStored && (this.correctNotes + this.incorrectNotes) > 20) {
+      this.storeAttemptData();
+    }
+    this.resetAttemptMetrics();
+    this.downloadAndTeachSong(songId);
+  }
+
+  // Descarga de la canción al dar clic en una tarjeta o cuando la URL trae un id.
+  downloadAndTeachSong(id: number): void {
+    // Guardamos el id de la canción para la calificación y analítica.
+    this.songId = id;
+    const url = `http://localhost:3000/canciones/download/${id}`;
+    this.http.get(url, { responseType: 'blob' }).subscribe(
+      (blob: Blob) => {
+        this.loadMXLFile(blob).then((scoreString: string | null) => {
+          if (scoreString) {
+            this.isScore = true;
+            this.renderer.removeClass(this.sheet, 'hidden');
+            // Renderizar la partitura con un pequeño retraso, por ejemplo 3000 ms.
+            this.renderScore(scoreString, 3000);
+            // Ocultar el selector de canciones si se estaba mostrando.
+            this.renderer.addClass(this.selectScore.nativeElement, 'hidden');
+            // Se simula un click en el botón de cierre del modal (si se usa offcanvas).
+            const btnClose = this.renderer.selectRootElement('.btn-close', true);
+            btnClose.click();
+          } else {
+            console.error('No se pudo cargar el score a partir del archivo MXL.');
+          }
+        });
+      },
+      (error) => {
+        console.error('Error al cargar el archivo MXL:', error);
+      }
+    );
+  }
+
+  // Llama al endpoint para obtener la lista de canciones desde la BD.
+  loadSongs(): void {
+    this.http.get<any[]>('http://localhost:3000/canciones').subscribe(
+      (data) => {
+        this.songs = data;
+      },
+      (error) => {
+        console.error('Error al cargar la lista de canciones:', error);
+      }
+    );
+  }
+
+  async loadMXLFile(blob: Blob) {
+    try {
+      const zip = await JSZip.loadAsync(blob);
+      const containerFile = zip.file('META-INF/container.xml');
+      if (!containerFile) {
+        throw new Error('No se encontró el archivo container.xml en el archivo .mxl');
+      }
+      const containerString = await containerFile.async('text');
+      const parser = new DOMParser();
+      const containerXml = parser.parseFromString(containerString, 'text/xml');
+      const rootfile = containerXml.querySelector('rootfile');
+      if (!rootfile) {
+        throw new Error('No se encontró el archivo XML principal en container.xml');
+      }
+      const xmlPath = rootfile.getAttribute('full-path');
+      if (!xmlPath) {
+        throw new Error('Atributo "full-path" no encontrado en rootfile.');
+      }
+      const xmlFile = zip.file(xmlPath);
+      if (!xmlFile) {
+        throw new Error(`No se encontró el archivo XML en la ruta ${xmlPath}`);
+      }
+      const xmlString = await xmlFile.async('text');
+      return xmlString;
+    } catch (error) {
+      console.error('Error al procesar el archivo .mxl:', error);
+      return null;
+    }
+  }
+
   ngOnDestroy(): void {
-    this.speechRecognition!.stop();
+    // Se detiene el reconocimiento de voz.
+    this.speechRecognition?.stop();
+    // Si aún no se ha almacenado el intento y se acumularon más de 20 notas, se guarda al destruir el componente.
+    if (!this.attemptStored && this.isScore && (this.correctNotes + this.incorrectNotes) > 20) {
+      this.storeAttemptData();
+    }
   }
 
   ngAfterViewInit(): void {
+    // Selección de elementos de la interfaz (checkboxes, contenedores, etc.).
     this.colorsCheckBox = this.renderer.selectRootElement('.colors-checkbox input');
     this.keysCheckbox = this.renderer.selectRootElement('.keys-checkbox input');
     this.aiCheckbox = this.renderer.selectRootElement('.ai-checkbox input');
     this.sheet = this.renderer.selectRootElement('#sheet');
-    
+
+    // Listener para mostrar/ocultar las teclas.
     this.keysCheckbox.addEventListener('change', () => {
       this.pianoKeys.forEach(key => {
         key.nativeElement.classList.toggle('hide');
       });
     });
 
+    // Alternar los colores.
     this.colorsCheckBox.addEventListener('change', () => this.showColors = !this.showColors);
-  
+
+    // Alternar la asistencia de la IA.
     this.aiCheckbox.addEventListener('change', () => this.speaker = !this.speaker);
 
+    // Eventos de mouse en cada tecla (mousedown y mouseup).
     this.pianoKeys.forEach((key) => {
-      this.renderer.listen(key.nativeElement, 'click', () => {
+      this.renderer.listen(key.nativeElement, 'mousedown', () => {
+        const note = key.nativeElement.dataset.note;
         const octave = this.octave + Number(key.nativeElement.dataset.octave);
-        this.playTuneForKeyboard(key.nativeElement.dataset.note, octave.toString());
+        const noteId = note + octave;
+        if (!this.pressedKeys.has(noteId)) {
+          this.pressedKeys.add(noteId);
+          this.playNoteOnKeyboard(note, octave.toString());
+        }
+      });
+      this.renderer.listen(key.nativeElement, 'mouseup', () => {
+        const note = key.nativeElement.dataset.note;
+        const octave = this.octave + Number(key.nativeElement.dataset.octave);
+        const noteId = note + octave;
+        if (this.pressedKeys.has(noteId)) {
+          this.pressedKeys.delete(noteId);
+          this.releaseNoteOnKeyboard(note, octave.toString());
+        }
       });
     });
-  
+
+    // Botones de cambio de octava.
     this.octaveButtons.forEach((button) => {
       this.renderer.listen(button.nativeElement, 'click', () => {
         if (button.nativeElement.dataset.action === '-' && this.octave > 0) {
@@ -82,70 +264,151 @@ export class PianoComponent implements OnInit, AfterViewInit {
       });
     });
 
-    this.scores.forEach((score) => {
-      this.renderer.listen(score.nativeElement, 'click', () => {
-        this.isScore = true;
-        this.renderer.removeClass(this.sheet, 'hidden');
-        this.renderScore(score.nativeElement.dataset.score);
-        this.renderer.addClass(this.selectScore.nativeElement, 'hidden');
-        this.renderer.selectRootElement('.btn-close').click();
-      });
+    // Inicializar OpenSheetMusicDisplay.
+    this.osmd = new OpenSheetMusicDisplay('sheet', {
+      drawingParameters: "compacttight",
+      autoResize: true,
+      pageFormat: 'Endless',
+      renderSingleHorizontalStaffline: true
     });
-
-    this.osmd = new OpenSheetMusicDisplay('sheet', {drawingParameters: "compacttight", autoResize: true, pageFormat: 'Endless', renderSingleHorizontalStaffline: true});
     if (!this.isScore) {
       this.renderer.addClass(this.sheet, 'hidden');
     }
-    
+
+    // Mensaje de bienvenida.
     setTimeout(() => this.speakText('¡Hola, estoy aquí para ayudarte!'), 500);
 
+    // Configurar listener para reiniciar el reconocimiento de voz.
     this.speechContainer.nativeElement.addEventListener('click', () => {
       if (!this.isRecording) {
         this.isRecording = true;
-        this.speechRecognition!.start();
+        this.speechRecognition?.start();
         this.speech.nativeElement.textContent = '';
         this.renderer.removeClass(this.speechContainer.nativeElement, 'contract');
       }
     });
-
+    
     this.initializeSpeechRecognition();
-
   }
 
-  playTuneForKeyboard(note: string, octave: string): void {
-    this.synth.triggerAttackRelease(note+octave, '8n');
-    const notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-    const keyElement = this.pianoKeys.find(k => k.nativeElement.dataset.note === note && k.nativeElement.dataset.octave == Number(octave) - this.octave)?.nativeElement;
-    if (keyElement) {
-      keyElement.classList.add('active');
-      const color = this.colorBackground(note);
-      if (this.showColors) {
-        this.renderer.addClass(this.pianoContainer.nativeElement, color);
-      }
-      setTimeout(() => {
-        keyElement.classList.remove('active');
-        this.renderer.removeClass(this.pianoContainer.nativeElement, color);
-      }, 150);
-    }
+  playNoteOnKeyboard(note: string, octave: string): void {
+    this.synth.triggerAttack(note + octave);
+    this.highlightKey(note, octave, true);
+    // Si la nota está en el acorde esperado y aún no se había contado, se suma a correctNotes.
     if (this.isScore) {
-      const isCorrectNote = this.osmd.cursor.NotesUnderCursor().some(n => notes[n.halfTone % 12] === note);
-      if (isCorrectNote) {
-        this.osmd.cursor.next();
-        const currentNote = ['C', 'D', 'E', 'F', 'G', 'A', 'B'].indexOf(notes[this.osmd.cursor.NotesUnderCursor()[0]?.halfTone % 12]) + 1;
-        this.speakText(currentNote.toString());
+      if (this.expectedChordNotes.includes(note) && !this.playedChordNotes.has(note)) {
+        this.correctNotes++;
+      }
+      // Se añade la nota a la colección de notas tocadas.
+      this.playedChordNotes.add(note);
+      this.handleScoreAndSpeech(note, octave);
+    } else {
+      this.speakText(note);
+    }
+  }
+
+  releaseNoteOnKeyboard(note: string, octave: string): void {
+    this.synth.triggerRelease(note + octave);
+    this.highlightKey(note, octave, false);
+    this.playedChordNotes.delete(note);
+  }
+
+  highlightKey(note: string, octave: string, isActive: boolean): void {
+    const keyElement = this.pianoKeys.find(k =>
+      k.nativeElement.dataset.note === note &&
+      k.nativeElement.dataset.octave == Number(octave) - this.octave
+    )?.nativeElement;
+    if (keyElement) {
+      if (isActive) {
+        keyElement.classList.add('active');
+        const color = this.colorBackground(note);
+        if (this.showColors) {
+          this.renderer.addClass(this.pianoContainer.nativeElement, color);
+        }
       } else {
-        const currentNote = ['C', 'D', 'E', 'F', 'G', 'A', 'B'].indexOf(notes[this.osmd.cursor.NotesUnderCursor()[0]?.halfTone % 12]) + 1;
-        this.speakText('¡Inténtalo de nuevo! ' + currentNote);
+        keyElement.classList.remove('active');
+        const color = this.colorBackground(note);
+        if (this.showColors) {
+          this.renderer.removeClass(this.pianoContainer.nativeElement, color);
+        }
+      }
+    }
+  }
+
+  updateExpectedChordNotes(): void {
+    // Actualiza el acorde esperado a partir del cursor.
+    this.expectedChordNotes = this.osmd.cursor.NotesUnderCursor().map(n => this.notesArray[n.halfTone % 12]);
+  }
+
+  handleScoreAndSpeech(note: string, octave: string): void {
+    if (this.isScore) {
+      if (this.expectedChordNotes.includes(note)) {
+        // Se verifica si se han tocado todas las notas del acorde esperado.
+        const chordCompleted = this.expectedChordNotes.every(n => this.playedChordNotes.has(n));
+        if (chordCompleted) {
+          this.chordsCompleted++;
+
+          this.playedChordNotes.clear();
+          this.osmd.cursor.next();
+          this.updateExpectedChordNotes();
+          if (this.expectedChordNotes.length > 0) {
+            const currentNotesSpelled = this.spellNotes(this.expectedChordNotes);
+            this.speakText(currentNotesSpelled);
+          } else {
+            // Fin de la partitura: se solicita la calificación y, al finalizar, se almacena la analítica.
+            this.speakText('¡Has terminado la melodía! Buen trabajo. ¿Qué dificultad te pareció la canción? Califica la canción en una escala del uno al cinco.');
+            this.activateRatingMode();
+            // En este caso, se almacenará el intento luego de recibir la calificación.
+            // Por eso no se invoca storeAttemptData de inmediato.
+          }
+        }
+      } else {
+        // Si la nota no corresponde al acorde esperado, se cuenta como incorrecta.
+        this.incorrectNotes++;
+        this.speakText('¡Nota incorrecta! Inténtalo de nuevo.');
       }
     } else {
-      this.speakText((['C', 'D', 'E', 'F', 'G', 'A', 'B'].indexOf(note) + 1).toString());
+      this.speakText(note);
     }
+  }
+
+  spellNotes(notes: string[]): string {
+    return notes.map(note => {
+      switch (note) {
+        case 'C#': return 'C#';
+        case 'D#': return 'D#';
+        case 'F#': return 'F#';
+        case 'G#': return 'G#';
+        case 'A#': return 'A#';
+        default:
+          return this.translateNoteToSpanish(note);
+      }
+    }).join(', ');
+  }
+
+  translateNoteToSpanish(note: string): string {
+    const noteTranslations: { [key: string]: string } = {
+      'C': 'C',
+      'D': 'D',
+      'E': 'E',
+      'F': 'F',
+      'G': 'G',
+      'A': 'A',
+      'B': 'B'
+    };
+    return noteTranslations[note] || note;
+  }
+
+  activateRatingMode(): void {
+    this.isRatingMode = true;
+    this.ratingAttempts = 0;
+    // Se espera que el usuario responda mediante reconocimiento de voz.
   }
 
   initMIDIAccess(): void {
     if (navigator.requestMIDIAccess) {
       navigator.requestMIDIAccess({ sysex: true })
-        .then(this.onMIDISuccess.bind(this), this.onMIDIFailure.bind(this));
+        .then((midiAccess) => this.onMIDISuccess(midiAccess as WebMidi.MIDIAccess), this.onMIDIFailure.bind(this));
     } else {
       console.log("No MIDI support in your browser.");
     }
@@ -163,13 +426,21 @@ export class PianoComponent implements OnInit, AfterViewInit {
 
   handleMIDIMessage(message: WebMidi.MIDIMessageEvent): void {
     const command = message.data[0];
-    const note = message.data[1];
+    const noteNumber = message.data[1];
     const velocity = message.data[2];
-
-    if (command === 144) {
-      if (velocity > 0) {
-        const key = this.midiNumberToNote(note);
-        this.playTuneForKeyboard(key[0], key[1]);
+    const key = this.midiNumberToNote(noteNumber);
+    const note = key[0];
+    const octave = key[1];
+    const noteId = note + octave;
+    if (command === 144 && velocity > 0) {
+      if (!this.pressedKeys.has(noteId)) {
+        this.pressedKeys.add(noteId);
+        this.playNoteOnKeyboard(note, octave);
+      }
+    } else if ((command === 128) || (command === 144 && velocity === 0)) {
+      if (this.pressedKeys.has(noteId)) {
+        this.pressedKeys.delete(noteId);
+        this.releaseNoteOnKeyboard(note, octave);
       }
     }
   }
@@ -181,13 +452,27 @@ export class PianoComponent implements OnInit, AfterViewInit {
     return [note, octave.toString()];
   }
 
-  renderScore(score: string) {
-    this.speakText('¡Muy buena elección!');
-    this.osmd.load('../../assets/scores/' + score,).then(() => {
+  renderScore(score: string, timeout = 1500) {
+    this.osmd.load(score).then(() => {
       this.osmd.render();
       this.osmd.cursor.show();
-      const currentNote = this.osmd.cursor.NotesUnderCursor()[0]?.halfTone % 12 + 1;
-      setTimeout(() => {this.speakText('¡Vamos a comenzar! ' + currentNote);}, 1500);
+      this.updateExpectedChordNotes();
+      // Se guarda el inicio del intento.
+      this.attemptStart = new Date();
+      // Se determina el total de acordes usando MeasureList (o SourceMeasures si MeasureList no existe).
+      if (this.osmd.Sheet && (<any>this.osmd.Sheet).MeasureList) {
+        this.totalChords = (<any>this.osmd.Sheet).MeasureList.length;
+      } else if (this.osmd.Sheet && this.osmd.Sheet.SourceMeasures) {
+        this.totalChords = this.osmd.Sheet.SourceMeasures.length;
+      } else {
+        this.totalChords = 0;
+      }
+      if (this.expectedChordNotes.length > 0) {
+        const currentNotesSpelled = this.spellNotes(this.expectedChordNotes);
+        setTimeout(() => { this.speakText('¡Vamos a comenzar! Toca: ' + currentNotesSpelled); }, timeout);
+      } else {
+        setTimeout(() => { this.speakText('La partitura está vacía.'); }, 1500);
+      }
     });
   }
 
@@ -208,14 +493,12 @@ export class PianoComponent implements OnInit, AfterViewInit {
         console.error('Speech synthesis not supported in this browser.');
         return;
       }
-
       this.isRecording = false;
       this.speechRecognition!.stop();
-
       this.speechSynth.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = 'es-ES';
-      utterance.rate = 1.5;
+      utterance.rate = 1.0;
       utterance.onstart = () => {
         this.renderer.addClass(this.robot.nativeElement, 'robotAnimation');
         this.renderer.addClass(this.chatBubble.nativeElement, 'chatAnimation');
@@ -236,22 +519,38 @@ export class PianoComponent implements OnInit, AfterViewInit {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       this.speechRecognition = new SpeechRecognition();
       this.speechRecognition.lang = 'es-ES';
-      this.speechRecognition.continuous = false;
+      this.speechRecognition.continuous = true;
       this.speechRecognition.interimResults = false;
-      
       this.speechRecognition.onresult = (event) => {
         const lastResult = event.results[event.resultIndex];
         const text = lastResult[0].transcript.trim();
         this.speech.nativeElement.textContent = text;
+        // Se normaliza a minúsculas y se eliminan acentos.
         this.speechCommand(text.toLocaleLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
       };
-
       this.speechRecognition.onend = () => {
         if (this.isRecording) {
           this.speechRecognition!.start();
         }
       };
-
+      this.speechRecognition.onerror = (event) => {
+        const errorEvent = event as any;
+        console.error('Error en el reconocimiento de voz:', errorEvent);
+        if (errorEvent.error === "no-speech") {
+          // Reiniciamos después de 1 segundo en caso de no detectar voz.
+          setTimeout(() => {
+            if (this.isRecording) {
+              this.speechRecognition!.start();
+            }
+          }, 1000);
+        } else {
+          // Para otros tipos de error, reiniciamos inmediatamente o según requerimiento.
+          if (this.isRecording) {
+            this.speechRecognition!.start();
+          }
+        }
+      };
+   
       this.speechRecognition.start();
     } else {
       console.warn('Speech recognition not available');
@@ -259,6 +558,96 @@ export class PianoComponent implements OnInit, AfterViewInit {
   }
 
   speechCommand(text: string): void {
+    // Modo de calificación de la canción.
+    if (this.isRatingMode) {
+      // Buscar un dígito entre 1 y 5.
+      const digitMatch = text.match(/\b([1-5])\b/);
+      if (digitMatch && digitMatch[1]) {
+        let rating = parseInt(digitMatch[1]);
+        if (rating < 1) { rating = 1; }
+        if (rating > 5) { rating = 5; }
+        this.difficultyRating = rating;
+        this.isRatingMode = false;
+        this.ratingAttempts = 0;
+        this.speakText(`Se ha registrado la dificultad ${rating}`);
+        if (this.songId !== null) {
+          // Cuando se completa la partitura y se envía la calificación correctamente,
+          // se almacena el intento con la calificación indicada.
+          this.storeAttemptData();
+          const relacion: CancionCalificacion = {
+            id_cancion: this.songId,
+            id_calificacion: rating
+          };
+          this.apiService.guardarCalificacionCancion(relacion).subscribe(
+            response => console.log('Calificación guardada', response),
+            error => console.error('Error al guardar la calificación', error)
+          );
+        }
+        return;
+      }
+      // Buscar la palabra equivalente.
+      const wordsMatch = text.match(/\b(uno|dos|tres|cuatro|cinco)\b/);
+      if (wordsMatch && wordsMatch[1]) {
+        const wordsToNumber: { [key: string]: number } = {
+          'uno': 1,
+          'dos': 2,
+          'tres': 3,
+          'cuatro': 4,
+          'cinco': 5
+        };
+        let rating = wordsToNumber[wordsMatch[1]];
+        if (rating < 1) { rating = 1; }
+        if (rating > 5) { rating = 5; }
+        this.difficultyRating = rating;
+        this.isRatingMode = false;
+        this.ratingAttempts = 0;
+        this.speakText(`Se ha registrado la dificultad ${rating}`);
+        if (this.songId !== null) {
+          // Luego de recibir la calificación se almacena el intento.
+          this.storeAttemptData();
+          const relacion: CancionCalificacion = {
+            id_cancion: this.songId,
+            id_calificacion: rating
+          };
+          this.apiService.guardarCalificacionCancion(relacion).subscribe(
+            response => console.log('Calificación guardada', response),
+            error => console.error('Error al guardar la calificación', error)
+          );
+        }
+        return;
+      }
+      this.ratingAttempts++;
+      if (this.ratingAttempts >= 2) {
+        // Al no entender la calificación después de dos intentos, se asigna una calificación intermedia.
+        this.difficultyRating = 3;
+        this.isRatingMode = false;
+        this.ratingAttempts = 0;
+        this.speakText(`No se logró entender la calificación. Se asigna una nota intermedia de 3`);
+        if (this.songId !== null) {
+          this.storeAttemptData();
+          const relacion: CancionCalificacion = {
+            id_cancion: this.songId,
+            id_calificacion: 3
+          };
+          this.apiService.guardarCalificacionCancion(relacion).subscribe(
+            response => console.log('Calificación guardada', response),
+            error => console.error('Error al guardar la calificación', error)
+          );
+        }
+      } else {
+        this.speakText(`No pude identificar un número del uno al cinco en tu respuesta. Por favor, indica un número del uno al cinco.`);
+      }
+      return;
+    }
+
+    // Comando de voz para volver al inicio
+    if (text.includes('inicio') || text.includes('volver al inicio') || text.includes('página principal')) {
+      this.speakText('Regresando a la pagina principal.');
+      this.navigateToHome();
+      return;
+    }
+
+    // Comandos de voz habituales.
     if (text.includes('hola')) {
       this.speakText('¡Hola! ¿En qué puedo ayudarte?');
     } else if (text.includes('adios')) {
@@ -271,6 +660,10 @@ export class PianoComponent implements OnInit, AfterViewInit {
       }, 1500);
     } else if (text.includes('repetir')) {
       this.speakText('¡Claro! Repitiendo la última instrucción.');
+      if (this.isScore && this.expectedChordNotes.length > 0) {
+        const currentNotesSpelled = this.spellNotes(this.expectedChordNotes);
+        this.speakText('Toca: ' + currentNotesSpelled);
+      }
     } else if (text.includes('teclado') || text.includes('tecla')) {
       this.speakText('¡Claro! Cambiando el estado del teclado.');
       this.keysCheckbox.click();
@@ -278,33 +671,102 @@ export class PianoComponent implements OnInit, AfterViewInit {
       this.speakText(`¡Claro! ${this.showColors ? "Ocultando" : "Mostrando"} los colores.`);
       this.colorsCheckBox.click();
     } else if (text.includes('partitura') || text.includes('melodia')) {
-      this.speakText(`¡Claro! Mostrando ocultando las partituras.`);
+      this.speakText('¡Claro! Mostrando/ocultando las partituras.');
       this.selectScore.nativeElement.click();
     } else if (text.includes('estrellita')) {
-      this.speakText(`¡Claro! Cargando ¿estrellita, dónde estás?`);
-      this.scores.get(0)!.nativeElement.click();
+      this.speakText('¡Claro! Cargando “Estrellita, ¿dónde estás?”.');
+      this.loadSong(1);
     } else if (text.includes('reinicia')) {
       if (this.isScore) {
-        this.speakText(`¡Claro! Reiniciando la melodía.`);
+        this.speakText('¡Claro! Reiniciando la melodía.');
         this.osmd.cursor.reset();
+        this.updateExpectedChordNotes();
+        const currentNotesSpelled = this.spellNotes(this.expectedChordNotes);
+        this.speakText('Toca: ' + currentNotesSpelled);
       }
     } else if (text.includes('ia') || text.includes('artificial') || text.includes('robot')) {
       if (this.speaker) {
-        this.speakText(`¡Claro! Desactivando la asistencia de IA.`);
+        this.speakText('¡Claro! Desactivando la asistencia de IA.');
         this.aiCheckbox.click();
       } else {
         this.aiCheckbox.click();
-        this.speakText(`¡Claro! Activando la asistencia de IA.`);
+        this.speakText('¡Claro! Activando la asistencia de IA.');
       }
     } else if (text.includes('bajar') || text.includes('baja')) {
-      this.speakText(`¡Claro! Bajando una octava.`);
+      this.speakText('¡Claro! Bajando una octava.');
       this.octaveButtons.get(0)!.nativeElement.click();
     } else if (text.includes('subir') || text.includes('sube')) {
-      this.speakText(`¡Claro! Subiendo una octava.`);
+      this.speakText('¡Claro! Subiendo una octava.');
       this.octaveButtons.get(1)!.nativeElement.click();
     } else if (text.includes('ayuda')) {
-      this.speakText('¡Claro! Puedes pedirme que repita, muestre el teclado, los colores o las partituras.');
+      this.speakText('¡Claro! Puedes pedirme que repita, mostrar el teclado, los colores, las partituras o volver a la pagina principal');
     }
   }
+
+  // Función auxiliar para obtener el id del usuario desde el token almacenado en localStorage.
+  extractUserIdFromToken(): number | null {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      return null;
+    }
+    try {
+      // El token se espera en formato JWT: header.payload.signature
+      const payload = token.split('.')[1];
+      const payloadDecoded = atob(payload);
+      const payloadObj = JSON.parse(payloadDecoded);
+      // Se asume que el id del usuario está en la propiedad "sub"
+      return Number(payloadObj.sub);
+    } catch (error) {
+      console.error('Error al extraer el id del usuario del token:', error);
+      return null;
+    }
+  }
+
+  // REGISTRA la analítica del intento actual y lo almacena en la BD usando el API Service.
+  // Si el intento se termina antes de calificar (difficultyRating es 0), se envía id_calificacion = 6.
+  storeAttemptData(): void {
+    const totalNotes = this.correctNotes + this.incorrectNotes;
+    const porcentajeAciertos = totalNotes > 0 ? (this.correctNotes / totalNotes) * 100 : 0;
+    const porcentajeError = totalNotes > 0 ? (this.incorrectNotes / totalNotes) * 100 : 0;
+    const completado = (this.expectedChordNotes.length === 0) ? 1 : 0;
+
+    // Si la calificación aún no se asignó (es 0), se asigna 6
+    const calificacion = this.difficultyRating === 0 ? 6 : this.difficultyRating;
+
+    const id_usuario = this.extractUserIdFromToken(); // Obtiene el id del usuario desde el token
+
+    // Se arma el objeto a enviar.
+    const intentoRecord = {
+      id_cancion: this.songId ?? undefined,
+      id_usuario: id_usuario ? id_usuario : 1, // Si no se obtiene el id, se asigna 1 por defecto
+      id_calificacion: calificacion,
+      notas_correctas_max: this.correctNotes,
+      notas_incorrectas_max: this.incorrectNotes,
+      porcentaje_aciertos: porcentajeAciertos,
+      porcentaje_error: porcentajeError,
+      porcentaje_completado: completado,
+      fecha: new Date().toISOString()
+    };
+
+    console.log("Intento registrado:", intentoRecord);
+
+    // Llamada al API para guardar el intento.
+    this.apiService.crearIntento(intentoRecord).subscribe(
+      response => console.log("Intento almacenado en el servidor", response),
+      error => console.error("Error al almacenar el intento:", error)
+    );
+
+    this.attemptStored = true;
+  }
   
+  // Resetea las variables de analítica para comenzar un nuevo intento.
+  resetAttemptMetrics(): void {
+    this.attemptStart = new Date();
+    this.correctNotes = 0;
+    this.incorrectNotes = 0;
+    this.chordsCompleted = 0;
+    this.totalChords = 0;
+    this.attemptStored = false;
+    this.playedChordNotes.clear();
+  }
 }
