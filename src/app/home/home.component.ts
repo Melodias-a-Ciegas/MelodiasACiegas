@@ -1,4 +1,4 @@
-import { Component, OnInit, NgZone } from '@angular/core';
+import { Component, OnInit, NgZone, OnDestroy } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Router } from '@angular/router';
 import { ApiService } from '../services/api.service';
@@ -11,19 +11,27 @@ declare var webkitSpeechRecognition: any;
   templateUrl: './home.component.html',
   styleUrls: ['./home.component.css']
 })
-export class HomeComponent implements OnInit {
+export class HomeComponent implements OnInit, OnDestroy {
 
   songs2: any[] = [];
   recommendations: any[] = [];  // Lista de recomendaciones
   selectedMode: 'songs' | 'practice' = 'songs';
   currentUserId = -1;
 
-  recognition: any; // Objeto para el reconocimiento de voz
+  recognition: SpeechRecognition | any; // Objeto para el reconocimiento de voz
+  isRecognitionRunning: boolean = false; // Bandera para controlar el estado del reconocimiento
+
   waitingForRecommendationSelection: boolean = false;  // Espera por el número de recomendación
   waitingForRecomendationConsent: boolean = false;      // Espera por la respuesta a "¿Leo recomendaciones?"
   waitingForModeChoice: boolean = false;                // Espera por la respuesta de: "¿Modo práctica o catálogo?"
 
-  constructor(private http: HttpClient, private router: Router, private apiService: ApiService, private zone: NgZone) { }
+  // Bandera para saber si el componente sigue activo
+  private destroyed = false;
+
+  constructor(private http: HttpClient,
+              private router: Router,
+              private apiService: ApiService,
+              private zone: NgZone) { }
 
   ngOnInit(): void {
     // Obtenemos el id del usuario actual
@@ -38,7 +46,7 @@ export class HomeComponent implements OnInit {
         (data: any) => {
           if (data && data.recommendations) {
             this.recommendations = data.recommendations;
-            // Por cada recomendación, buscamos la canción correspondiente en songs2 para asignarle la imagen
+            // Por cada recomendación, buscamos la canción correspondiente para asignarle la imagen
             this.recommendations.forEach(rec => {
               const matchedSong = this.songs2.find(song => song.id === rec.idCancionId);
               if (matchedSong) {
@@ -95,7 +103,7 @@ export class HomeComponent implements OnInit {
 
   // Da la bienvenida y pregunta si se desea leer las recomendaciones
   welcomeAndAskRecommendations(): void {
-    const welcomeMessage = 'Bienvenido a melodias a ciegas. ¿Deseas que lea las recomendaciones?';
+    const welcomeMessage = 'Bienvenido a melodias. ¿Deseas que lea las recomendaciones?';
     this.say(welcomeMessage);
     this.waitingForRecomendationConsent = true;
   }
@@ -109,13 +117,14 @@ export class HomeComponent implements OnInit {
     }
     this.recognition = new SpeechRecognition();
     this.recognition.lang = 'es-ES';
-    this.recognition.continuous = true;
+    this.recognition.continuous = false; // Si se prefiere iniciar y detener se usará false
     this.recognition.interimResults = false;
 
     this.recognition.onresult = (event: any) => {
       const lastResultIndex = event.results.length - 1;
       const transcript = event.results[lastResultIndex][0].transcript.trim().toLowerCase();
       console.log('Reconocido:', transcript);
+      // Se usa zone.run para actualizar la vista si procede
       this.zone.run(() => {
         this.parseVoiceCommand(transcript);
       });
@@ -123,14 +132,38 @@ export class HomeComponent implements OnInit {
 
     this.recognition.onend = () => {
       console.log('Reconocimiento de voz finalizado, reiniciando...');
-      this.recognition.start();
+      this.isRecognitionRunning = false;
+      // Solo reiniciamos si el componente sigue activo
+      if (!this.destroyed) {
+        try {
+          this.recognition.start();
+          this.isRecognitionRunning = true;
+        } catch (err) {
+          console.error('Error al reiniciar recognition:', err);
+        }
+      }
     };
 
     this.recognition.onerror = (event: any) => {
       console.error('Error en la API de voz:', event.error);
+      setTimeout(() => {
+        if (!this.destroyed) {
+          try {
+            this.recognition.start();
+            this.isRecognitionRunning = true;
+          } catch (err) {
+            console.error('Error al reiniciar recognition tras error:', err);
+          }
+        }
+      }, 2000);
     };
 
-    this.recognition.start();
+    try {
+      this.recognition.start();
+      this.isRecognitionRunning = true;
+    } catch (err) {
+      console.error('Error al iniciar recognition:', err);
+    }
   }
 
   // Procesa de forma flexible los comandos y respuestas del usuario
@@ -140,46 +173,47 @@ export class HomeComponent implements OnInit {
       this.handleRecommendationConsent(phrase);
       return;
     }
-    // Si se espera respuesta con el número de recomendación, se procesa esa entrada
+    // Si se espera respuesta con el número de recomendación
     if (this.waitingForRecommendationSelection) {
       this.handleRecommendationSelection(phrase);
       return;
     }
-    // Si se espera la elección entre modo práctica o catálogo, se procesa esa entrada
+    // Si se espera la elección entre modo práctica o catálogo
     if (this.waitingForModeChoice) {
       this.handleModeChoice(phrase);
       return;
     }
-
-    // Comandos para cambiar a modo Canciones (usando expresiones regulares para ser más flexibles)
+    // Comandos para cambiar a modo Canciones
     if (phrase.match(/(modo\s*canciones|mostrar\s*canciones|seleccionar\s*canciones)/)) {
       console.log('Cambiando a modo Canciones');
       this.selectedMode = 'songs';
       return;
     }
-
     // Comandos para cambiar a modo Práctica Libre
     if (phrase.match(/(modo\s*práctica|práctica\s*libre|iniciar\s*práctica)/)) {
       console.log('Cambiando a modo Práctica Libre');
-      this.selectedMode = 'practice';
+      this.router.navigate(['piano']);
       return;
     }
-
     // Comando para subir canción
     if (phrase.includes('subir canción')) {
       console.log('Navegando a subir canción');
       this.navigateToUploadSong();
       return;
     }
-
     // Comando para comenzar práctica libre
     if (phrase.match(/(comenzar\s*práctica|iniciar\s*práctica libre)/)) {
       console.log('Comenzando Práctica Libre');
       this.navigateToPractice();
       return;
     }
-
-    // Comando para abrir una canción a partir de su nombre
+    // Selección "estrellita"
+    if (phrase.includes('estrellita')) {
+      console.log('Abriendo canción: Estrellita');
+      this.navigateToSong(10);
+      return;
+    }
+    // Comando para abrir una canción por nombre
     if (phrase.includes('abrir canción') || phrase.includes('seleccionar canción')) {
       let songName = '';
       if (phrase.includes('abrir canción')) {
@@ -198,7 +232,6 @@ export class HomeComponent implements OnInit {
       }
       return;
     }
-
   }
 
   // Función para emitir síntesis de voz
@@ -215,6 +248,7 @@ export class HomeComponent implements OnInit {
       return;
     }
     let message = 'Estas son tus recomendaciones. ';
+    console.log('Recomendaciones Para leer:', this.recommendations);
     this.recommendations.forEach((rec, index) => {
       message += `Número ${index + 1}: ${rec.nombre} de ${rec.compositor}. `;
     });
@@ -223,9 +257,8 @@ export class HomeComponent implements OnInit {
     this.waitingForRecommendationSelection = true;
   }
 
-  // Procesa la respuesta del usuario a la pregunta "¿Deseas que lea las recomendaciones?"
+  // Procesa la respuesta para la pregunta "¿Deseas que lea las recomendaciones?"
   handleRecommendationConsent(response: string): void {
-    // Se consideran afirmativas algunas palabras clave aunque estén en oraciones más largas
     const affirmativeWords = ['sí', 'si', 'claro', 'por supuesto', 'vale', 'ok', 'okay'];
     const negativeWords = ['no', 'nada', 'para nada', 'negativo'];
 
@@ -236,47 +269,40 @@ export class HomeComponent implements OnInit {
     } else if (negativeWords.some(word => response.includes(word))) {
       this.say('Perfecto, continuamos.');
       this.waitingForRecomendationConsent = false;
-      // Si el usuario decide no leer las recomendaciones, preguntamos a cuál modo desea ir
       this.askModeChoice();
     } else {
-      // Si no se entiende la respuesta se repite la pregunta de forma amigable
       this.say('No entendí tu respuesta. ¿Deseas que lea las recomendaciones? Por favor, responde con sí o no.');
       this.waitingForRecomendationConsent = true;
     }
   }
 
-  // Pregunta al usuario si prefiere ir al modo práctica libre o escoger canción del catálogo
+  // Pregunta si se prefiere ir al modo práctica libre o catálogo
   askModeChoice(): void {
     const message = '¿Prefieres ir al modo de práctica libre o escoger una canción del catálogo?';
     this.say(message);
     this.waitingForModeChoice = true;
   }
 
-  // Procesa la respuesta del usuario para elegir entre modo práctica o catálogo
+  // Procesa la respuesta para elegir entre práctica o catálogo
   handleModeChoice(response: string): void {
-    // Se buscan palabras clave en la respuesta para detectar la intención
     if (response.match(/(práctica|practicar|practica)/)) {
       this.say('Muy bien, cambiando al modo de práctica libre.');
       this.waitingForModeChoice = false;
       this.selectedMode = 'practice';
-      // Opcionalmente se puede navegar directamente al modo práctica:
       this.navigateToPractice();
     } else if (response.match(/(canción|catálogo|catalogo|seleccionar)/)) {
       this.say('De acuerdo, cambiando al modo de canciones.');
       this.waitingForModeChoice = false;
       this.selectedMode = 'songs';
-      // El usuario podrá escoger luego una canción del catálogo.
     } else {
       this.say('No entendí tu respuesta. Por favor, dime si prefieres modo de práctica libre o catálogo de canciones.');
       this.waitingForModeChoice = true;
     }
   }
 
-  // Procesa la respuesta del usuario al preguntar el número de recomendación (se busca cualquier número en la frase)
+  // Procesa la respuesta para elegir el número de recomendación
   handleRecommendationSelection(response: string): void {
-    // Se busca cualquier dígito en la respuesta
     const digitMatch = response.match(/\d+/);
-    // Y se define un mapa para palabras numéricas
     const numberMap: { [key: string]: number } = {
       'uno': 1, 'dos': 2, 'tres': 3, 'cuatro': 4, 'cinco': 5,
       'seis': 6, 'siete': 7, 'ocho': 8, 'nueve': 9, 'diez': 10
@@ -286,7 +312,6 @@ export class HomeComponent implements OnInit {
     if (digitMatch && digitMatch[0]) {
       selectedNumber = parseInt(digitMatch[0], 10);
     } else {
-      // Si no se encuentra dígito, se busca en la respuesta alguna palabra del mapa
       Object.keys(numberMap).forEach(key => {
         if (response.includes(key)) {
           selectedNumber = numberMap[key];
@@ -302,6 +327,17 @@ export class HomeComponent implements OnInit {
     } else {
       this.say('No entendí el número indicado. Por favor, dime nuevamente el número de la canción que deseas.');
       this.waitingForRecommendationSelection = true;
+    }
+  }
+
+  ngOnDestroy(): void {
+    // Se marca el componente como destruido para evitar reinicios del reconocimiento de voz
+    this.destroyed = true;
+    try {
+      this.recognition?.stop();
+      this.isRecognitionRunning = false;
+    } catch (err) {
+      console.error('Error al detener el reconocimiento de voz:', err);
     }
   }
 }

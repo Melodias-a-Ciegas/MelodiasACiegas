@@ -34,6 +34,11 @@ export class PianoComponent implements OnInit, AfterViewInit, OnDestroy {
   speaker: boolean = true;
   speechRecognition: SpeechRecognition | null = null;
   isRecording: boolean = true;
+  // Bandera para controlar el estado del reconocimiento de voz
+  isSpeechRecognitionRunning: boolean = false;
+  // Nueva bandera para conocer el estado del componente
+  private destroyed: boolean = false;
+  
 
   // Para evitar activaciones repetidas de teclas
   pressedKeys: Set<string> = new Set();
@@ -203,8 +208,15 @@ export class PianoComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    // Indica que el componente se está destruyendo para que no se reinicie el reconocimiento
+    this.destroyed = true;
     // Se detiene el reconocimiento de voz.
-    this.speechRecognition?.stop();
+    try {
+      this.speechRecognition?.stop();
+      this.isSpeechRecognitionRunning = false;
+    } catch (err) {
+      console.error('Error al detener el reconocimiento de voz:', err);
+    }
     // Si aún no se ha almacenado el intento y se acumularon más de 20 notas, se guarda al destruir el componente.
     if (!this.attemptStored && this.isScore && (this.correctNotes + this.incorrectNotes) > 20) {
       this.storeAttemptData();
@@ -282,30 +294,54 @@ export class PianoComponent implements OnInit, AfterViewInit, OnDestroy {
     this.speechContainer.nativeElement.addEventListener('click', () => {
       if (!this.isRecording) {
         this.isRecording = true;
-        this.speechRecognition?.start();
+        try {
+          this.speechRecognition?.start();
+          this.isSpeechRecognitionRunning = true;
+        } catch (err) {
+          console.error('Error al iniciar reconocimiento desde click:', err);
+        }
         this.speech.nativeElement.textContent = '';
         this.renderer.removeClass(this.speechContainer.nativeElement, 'contract');
       }
     });
     
+
+    // Configurar listener para reiniciar el reconocimiento de voz si se hace clic:
+    this.speechContainer.nativeElement.addEventListener('click', () => {
+      if (!this.isRecording) {
+        this.isRecording = true;
+        try {
+          this.speechRecognition?.start();
+          this.isSpeechRecognitionRunning = true;
+        } catch (err) {
+          console.error('Error al iniciar reconocimiento desde click:', err);
+        }
+        this.speech.nativeElement.textContent = '';
+        this.renderer.removeClass(this.speechContainer.nativeElement, 'contract');
+      }
+    });
+
     this.initializeSpeechRecognition();
   }
 
   playNoteOnKeyboard(note: string, octave: string): void {
     this.synth.triggerAttack(note + octave);
     this.highlightKey(note, octave, true);
-    // Si la nota está en el acorde esperado y aún no se había contado, se suma a correctNotes.
+    
     if (this.isScore) {
+      // Si se trata del modo partitura, se maneja la nota correctamente y se suma a la analítica.
       if (this.expectedChordNotes.includes(note) && !this.playedChordNotes.has(note)) {
         this.correctNotes++;
       }
-      // Se añade la nota a la colección de notas tocadas.
       this.playedChordNotes.add(note);
       this.handleScoreAndSpeech(note, octave);
     } else {
-      this.speakText(note);
+      // En modo práctica se traduce la letra a número antes de decirla.
+      const numeroNota = this.translateNoteToSpanish(note);
+      this.speakText(numeroNota);
     }
   }
+  
 
   releaseNoteOnKeyboard(note: string, octave: string): void {
     this.synth.triggerRelease(note + octave);
@@ -365,7 +401,12 @@ export class PianoComponent implements OnInit, AfterViewInit, OnDestroy {
       } else {
         // Si la nota no corresponde al acorde esperado, se cuenta como incorrecta.
         this.incorrectNotes++;
-        this.speakText('¡Nota incorrecta! Inténtalo de nuevo.');
+        const correctNotesSpelled = this.spellNotes(this.expectedChordNotes);
+        if (this.expectedChordNotes.length > 1) {
+          this.speakText('¡Nota incorrecta!, toca las notas: ' + correctNotesSpelled);
+        } else {
+          this.speakText('¡Nota incorrecta!, toca la nota: ' + correctNotesSpelled);
+        }
       }
     } else {
       this.speakText(note);
@@ -373,13 +414,35 @@ export class PianoComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   spellNotes(notes: string[]): string {
-    return notes.map(note => {
+    // Definición del orden de las notas. Puedes ajustar estos valores si lo deseas.
+    const noteOrder: { [key: string]: number } = {
+      'C': 1,
+      'D': 2,
+      'E': 3,
+      'F': 4,
+      'G': 5,
+      'A': 6,
+      'B': 7,
+      'C#': 8,
+      'D#': 9,
+      'F#': 10,
+      'G#': 11,
+      'A#': 12
+    };
+  
+    // Se crea una copia del arreglo y se ordena usando el mapeo anterior.
+    const notasOrdenadas = [...notes].sort((a, b) => {
+      return (noteOrder[a] || 0) - (noteOrder[b] || 0);
+    });
+  
+    // Se traduce cada nota a su representación en "número" (o palabra) según la lógica original.
+    return notasOrdenadas.map(note => {
       switch (note) {
-        case 'C#': return 'C#';
-        case 'D#': return 'D#';
-        case 'F#': return 'F#';
-        case 'G#': return 'G#';
-        case 'A#': return 'A#';
+        case 'C#': return '8';
+        case 'D#': return '9';
+        case 'F#': return '10';
+        case 'G#': return '11';
+        case 'A#': return '12';
         default:
           return this.translateNoteToSpanish(note);
       }
@@ -388,14 +451,20 @@ export class PianoComponent implements OnInit, AfterViewInit, OnDestroy {
 
   translateNoteToSpanish(note: string): string {
     const noteTranslations: { [key: string]: string } = {
-      'C': 'C',
-      'D': 'D',
-      'E': 'E',
-      'F': 'F',
-      'G': 'G',
-      'A': 'A',
-      'B': 'B'
-    };
+         'C': '1',
+         'C#': '8',
+         'D': '2',
+         'D#': '9',
+         'E': '3',
+         'F': '4',
+         'F#': '10',
+         'G': '5',
+         'G#': '11',
+         'A': '6',
+         'A#': '12',
+         'B': '7'
+        };
+    
     return noteTranslations[note] || note;
   }
 
@@ -493,8 +562,13 @@ export class PianoComponent implements OnInit, AfterViewInit, OnDestroy {
         console.error('Speech synthesis not supported in this browser.');
         return;
       }
-      this.isRecording = false;
-      this.speechRecognition!.stop();
+      // Se detiene el reconocimiento antes de emitir el mensaje (para evitar interferencias)
+      try {
+        this.speechRecognition?.stop();
+        this.isSpeechRecognitionRunning = false;
+      } catch (err) {
+        console.error('Error al detener reconocimiento:', err);
+      }
       this.speechSynth.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = 'es-ES';
@@ -506,13 +580,22 @@ export class PianoComponent implements OnInit, AfterViewInit, OnDestroy {
       utterance.onend = () => {
         this.renderer.removeClass(this.robot.nativeElement, 'robotAnimation');
         this.renderer.removeClass(this.chatBubble.nativeElement, 'chatAnimation');
+        // Reiniciamos el reconocimiento solo si el componente sigue activo
         this.isRecording = true;
-        this.speechRecognition!.start();
+        if (!this.destroyed) {
+          try {
+            this.speechRecognition?.start();
+            this.isSpeechRecognitionRunning = true;
+          } catch (err) {
+            console.error('Error al reiniciar reconocimiento tras speechSynth:', err);
+          }
+        }
       };
       this.speechSynth.speak(utterance);
     }
     this.chatBubble.nativeElement.textContent = text;
   }
+
 
   initializeSpeechRecognition(): void {
     if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
@@ -525,33 +608,54 @@ export class PianoComponent implements OnInit, AfterViewInit, OnDestroy {
         const lastResult = event.results[event.resultIndex];
         const text = lastResult[0].transcript.trim();
         this.speech.nativeElement.textContent = text;
-        // Se normaliza a minúsculas y se eliminan acentos.
+        // Normalizamos a minúsculas sin acentos y se procesa el comando de voz.
         this.speechCommand(text.toLocaleLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
       };
       this.speechRecognition.onend = () => {
-        if (this.isRecording) {
-          this.speechRecognition!.start();
+        console.log("Reconocimiento de voz finalizado.");
+        this.isSpeechRecognitionRunning = false;
+        // Reiniciamos el reconocimiento solo si el componente sigue activo y se requiere grabar.
+        if (!this.destroyed && this.isRecording) {
+          try {
+            this.speechRecognition!.start();
+            this.isSpeechRecognitionRunning = true;
+          } catch (err) {
+            console.error("Error al reiniciar reconocimiento en onend:", err);
+          }
         }
       };
       this.speechRecognition.onerror = (event) => {
         const errorEvent = event as any;
         console.error('Error en el reconocimiento de voz:', errorEvent);
         if (errorEvent.error === "no-speech") {
-          // Reiniciamos después de 1 segundo en caso de no detectar voz.
           setTimeout(() => {
-            if (this.isRecording) {
-              this.speechRecognition!.start();
+            if (!this.destroyed && this.isRecording) {
+              try {
+                this.speechRecognition!.start();
+                this.isSpeechRecognitionRunning = true;
+              } catch (err) {
+                console.error("Error al reiniciar reconocimiento tras 'no-speech':", err);
+              }
             }
           }, 1000);
         } else {
-          // Para otros tipos de error, reiniciamos inmediatamente o según requerimiento.
-          if (this.isRecording) {
-            this.speechRecognition!.start();
+          if (!this.destroyed && this.isRecording) {
+            try {
+              this.speechRecognition!.start();
+              this.isSpeechRecognitionRunning = true;
+            } catch (err) {
+              console.error("Error al reiniciar reconocimiento tras error:", err);
+            }
           }
         }
       };
-   
-      this.speechRecognition.start();
+
+      try {
+        this.speechRecognition.start();
+        this.isSpeechRecognitionRunning = true;
+      } catch (err) {
+        console.error("Error al iniciar reconocimiento de voz:", err);
+      }
     } else {
       console.warn('Speech recognition not available');
     }
@@ -655,11 +759,16 @@ export class PianoComponent implements OnInit, AfterViewInit, OnDestroy {
       setTimeout(() => {
         this.isRecording = false;
         this.renderer.addClass(this.speechContainer.nativeElement, 'contract');
-        this.speechRecognition!.stop();
+        try {
+          this.speechRecognition!.stop();
+          this.isSpeechRecognitionRunning = false;
+        } catch (err) {
+          console.error('Error al detener reconocimiento en "adios":', err);
+        }
         this.speech.nativeElement.textContent = '';
       }, 1500);
-    } else if (text.includes('repetir')) {
-      this.speakText('¡Claro! Repitiendo la última instrucción.');
+    } else if (text.includes('repetir') || text.includes('repite') || text.includes('repita')) {
+      this.speakText('¡Claro! Repitiendo la cancion.');
       if (this.isScore && this.expectedChordNotes.length > 0) {
         const currentNotesSpelled = this.spellNotes(this.expectedChordNotes);
         this.speakText('Toca: ' + currentNotesSpelled);

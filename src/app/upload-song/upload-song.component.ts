@@ -16,6 +16,8 @@ export class UploadSongComponent{
   songForm: FormGroup;
   imageFile: File | null = null;
   compressedXMLFile: File | null = null;
+  songName: string = '';
+
   uploadURL = 'http://localhost:3000/canciones'; // Ajusta la URL segun corresponda
 
   mxlFile: ArrayBuffer | null = null;
@@ -25,6 +27,7 @@ export class UploadSongComponent{
       nombre: ['', Validators.required]
     });
   }
+  
 
   onImageChange(event: any) {
     const file = event.target.files[0]; 
